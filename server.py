@@ -28,6 +28,14 @@ RESOLUTION = "1920x1080"
 FPS = 60
 BITRATE = "15M"              # 15 Mbps, tu peux monter à 25-30M en LAN filaire
 SERVER_NAME = platform.node()  # nom de la machine (affiché côté client)
+
+ENABLE_AUDIO = True
+# Nom exact du périphérique audio "loopback" (le son qui sort de tes enceintes/casque).
+# Pour le trouver, lance dans un terminal :
+#   ffmpeg -list_devices true -f dshow -i dummy
+# et cherche la ligne du type "Stereo Mix (Realtek High Definition Audio)"
+# ou "CABLE Output (VB-Audio Virtual Cable)" si tu utilises VB-CABLE.
+AUDIO_DEVICE = "Stereo Mix (Realtek High Definition Audio)"
 # =========================================================
 
 mouse = MouseController()
@@ -65,12 +73,18 @@ def wait_for_client():
 
 
 def start_video_stream(client_ip):
-    """Capture l'écran et encode en H.264 (NVENC) puis envoie en UDP au client."""
-    cmd = [
-        "ffmpeg",
-        "-f", "gdigrab",
-        "-framerate", str(FPS),
-        "-i", "desktop",
+    """Capture l'écran (+ audio si activé) et encode en H.264/AAC puis envoie en UDP au client."""
+    cmd = ["ffmpeg"]
+
+    # ---- Entrée vidéo ----
+    cmd += ["-f", "gdigrab", "-framerate", str(FPS), "-i", "desktop"]
+
+    # ---- Entrée audio (optionnelle) ----
+    if ENABLE_AUDIO:
+        cmd += ["-f", "dshow", "-i", f"audio={AUDIO_DEVICE}"]
+
+    # ---- Encodage vidéo ----
+    cmd += [
         "-vf", f"scale={RESOLUTION}",
         "-c:v", "h264_nvenc",
         "-preset", "p1",          # p1 = plus rapide (priorité latence)
@@ -79,10 +93,25 @@ def start_video_stream(client_ip):
         "-b:v", BITRATE,
         "-g", str(FPS),           # 1 keyframe par seconde
         "-pix_fmt", "yuv420p",
+    ]
+
+    # ---- Encodage audio (optionnel) ----
+    if ENABLE_AUDIO:
+        cmd += [
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-ar", "48000",
+            "-ac", "2",
+        ]
+    else:
+        cmd += ["-an"]  # pas de piste audio
+
+    cmd += [
         "-f", "mpegts",
         f"udp://{client_ip}:{VIDEO_PORT}?pkt_size=1316",
     ]
-    print("[SERVEUR] Démarrage du stream vidéo vers", client_ip)
+
+    print("[SERVEUR] Démarrage du stream vidéo" + (" + audio" if ENABLE_AUDIO else "") + " vers", client_ip)
     subprocess.run(cmd)
 
 
