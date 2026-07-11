@@ -59,107 +59,46 @@ def get_native_resolution():
         return None
 
 
-def select_resolution():
-    """Menu interactif pour choisir la résolution du stream (capture + encodage)."""
-    native = get_native_resolution()
-    presets = ["1920x1080", "2560x1440", "3840x2160"]
-
-    options = []
-    if native:
-        options.append(native)
-    for p in presets:
-        if p not in options:
-            options.append(p)
-
-    print("[SERVEUR] Configuration de la résolution du stream (capture côté serveur) :")
-    for i, val in enumerate(options):
-        tags = []
-        if val == native:
-            tags.append("résolution native détectée")
-        if val == RESOLUTION:
-            tags.append("actuellement configuré")
-        tag_str = f"  <- {', '.join(tags)}" if tags else ""
-        print(f"    [{i}] {val}{tag_str}")
-    print("    [c] Résolution personnalisée (ex: 1600x900)")
-
-    default_index = options.index(RESOLUTION) if RESOLUTION in options else None
-    hint = f"(Entrée = garder {RESOLUTION})" if default_index is not None else "(tape un numéro ou 'c')"
-
-    while True:
-        choice = input(f"[SERVEUR] Choix {hint} : ").strip().lower()
-
-        if choice == "" and default_index is not None:
-            return options[default_index]
-        if choice == "c":
-            custom = input("[SERVEUR] Résolution personnalisée (ex: 1600x900) : ").strip()
-            if "x" in custom and all(p.isdigit() for p in custom.split("x")):
-                return custom
-            print("[SERVEUR] Format invalide, réessaie (ex: 1600x900).")
-            continue
-        if choice.isdigit() and 0 <= int(choice) < len(options):
-            return options[int(choice)]
-
-        print("[SERVEUR] Choix invalide, réessaie.")
-
-
 def get_dshow_audio_devices():
-    """Retourne la liste des noms de périphériques audio DirectShow détectés par FFmpeg."""
+    """Retourne (liste des noms de périphériques audio DirectShow, sortie brute de ffmpeg).
+
+    FFmpeg a deux formats de sortie possibles pour '-list_devices' selon la version :
+      Ancien :  "DirectShow audio devices" (en-tête de section) puis les noms en dessous
+      Récent :  chaque ligne se termine par (video) / (audio) / (none)
+    On gère les deux.
+    """
     try:
         result = subprocess.run(
             ["ffmpeg", "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
             capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=15,
         )
         output = result.stderr
+    except FileNotFoundError:
+        return [], "ERREUR : ffmpeg introuvable (pas dans le PATH)."
     except Exception as e:
-        print("[SERVEUR] Impossible de lister les périphériques audio:", e)
-        return []
+        return [], f"Impossible de lister les périphériques audio: {e}"
 
+    import re
     devices = []
-    in_audio_section = False
-    for line in output.splitlines():
-        if "DirectShow audio devices" in line:
-            in_audio_section = True
-            continue
-        if "DirectShow video devices" in line:
-            in_audio_section = False
-            continue
-        if in_audio_section and '"' in line:
-            name = line.split('"')[1]
-            devices.append(name)
-    return devices
 
-
-def select_audio_device(devices):
-    """Affiche un menu pour choisir manuellement le périphérique audio à utiliser."""
-    if not devices:
-        print("[SERVEUR] Aucun périphérique audio détecté sur ce PC.")
-        print("[SERVEUR] Voir le README, section 'Configuration audio' (Stereo Mix / VB-CABLE).")
-        print("[SERVEUR] → Audio désactivé pour cette session.")
-        return None
-
-    print("[SERVEUR] Périphériques audio disponibles :")
-    for i, d in enumerate(devices):
-        marker = "  <- actuellement configuré" if d == AUDIO_DEVICE else ""
-        print(f"    [{i}] {d}{marker}")
-    print("    [n] Désactiver l'audio pour cette session")
-
-    default_index = devices.index(AUDIO_DEVICE) if AUDIO_DEVICE in devices else None
-    if default_index is not None:
-        hint = f"(Entrée = garder \"{AUDIO_DEVICE}\", ou tape un numéro, ou 'n')"
+    # Format récent : lignes du type   "Nom du périphérique" (audio)
+    new_format_matches = re.findall(r'"([^"]+)"\s*\((audio|video|none)\)', output)
+    if new_format_matches:
+        devices = [name for name, kind in new_format_matches if kind == "audio"]
     else:
-        hint = "(tape un numéro dans la liste, ou 'n' pour désactiver l'audio)"
+        # Format ancien : sections "DirectShow audio devices" / "DirectShow video devices"
+        in_audio_section = False
+        for line in output.splitlines():
+            if "DirectShow audio devices" in line:
+                in_audio_section = True
+                continue
+            if "DirectShow video devices" in line:
+                in_audio_section = False
+                continue
+            if in_audio_section and '"' in line and "Alternative name" not in line:
+                devices.append(line.split('"')[1])
 
-    while True:
-        choice = input(f"[SERVEUR] Choix {hint} : ").strip().lower()
-
-        if choice == "" and default_index is not None:
-            return devices[default_index]
-        if choice == "n":
-            return None
-        if choice.isdigit() and 0 <= int(choice) < len(devices):
-            return devices[int(choice)]
-
-        print("[SERVEUR] Choix invalide, réessaie.")
+    return devices, output
 
 
 def get_local_ip():
@@ -368,18 +307,23 @@ class ServerApp:
         tk.Label(audio_frame, text="Périphérique audio :", bg=BG, fg=FG,
                  font=("Segoe UI", 10)).pack(anchor="w")
 
-        self.log("[SERVEUR] Recherche des périphériques audio...")
-        audio_devices = get_dshow_audio_devices() if ENABLE_AUDIO else []
-        audio_options = ["Désactiver l'audio"] + audio_devices
-        default_audio = AUDIO_DEVICE if AUDIO_DEVICE in audio_devices else (
-            audio_devices[0] if audio_devices else "Désactiver l'audio")
-        self.audio_var = tk.StringVar(value=default_audio)
-        audio_combo = ttk.Combobox(audio_frame, textvariable=self.audio_var,
-                                    values=audio_options, state="readonly", font=("Segoe UI", 10))
-        audio_combo.pack(fill="x", pady=5)
-        if not audio_devices:
-            tk.Label(audio_frame, text="Aucun périphérique détecté (voir README, section audio).",
-                     bg=BG, fg="#aaaaaa", font=("Segoe UI", 8)).pack(anchor="w")
+        audio_row = tk.Frame(audio_frame, bg=BG)
+        audio_row.pack(fill="x", pady=5)
+
+        self.audio_var = tk.StringVar(value="Désactiver l'audio")
+        self.audio_combo = ttk.Combobox(audio_row, textvariable=self.audio_var,
+                                         values=["Désactiver l'audio"], state="readonly",
+                                         font=("Segoe UI", 10))
+        self.audio_combo.pack(side="left", fill="x", expand=True)
+
+        tk.Button(audio_row, text="🔄", font=("Segoe UI", 10), bg=BG2, fg="white",
+                  relief="flat", command=self.refresh_audio_devices).pack(side="left", padx=(5, 0))
+
+        self.audio_hint = tk.Label(audio_frame, text="", bg=BG, fg="#aaaaaa",
+                                    font=("Segoe UI", 8), justify="left", wraplength=460)
+        self.audio_hint.pack(anchor="w")
+
+        self.refresh_audio_devices()
 
         # ---- Bouton démarrer ----
         self.start_btn = tk.Button(self.root, text="▶  Démarrer le serveur",
@@ -410,6 +354,30 @@ class ServerApp:
             self.status_text.see("end")
             self.status_text.configure(state="disabled")
         self.root.after(150, self.drain_log_queue)
+
+    def refresh_audio_devices(self):
+        self.log("[SERVEUR] Recherche des périphériques audio...")
+        devices, raw_output = get_dshow_audio_devices()
+
+        audio_options = ["Désactiver l'audio"] + devices
+        self.audio_combo.configure(values=audio_options)
+
+        if devices:
+            default_audio = AUDIO_DEVICE if AUDIO_DEVICE in devices else devices[0]
+            self.audio_var.set(default_audio)
+            self.audio_hint.configure(text=f"{len(devices)} périphérique(s) trouvé(s).")
+            self.log(f"[SERVEUR] Périphériques audio détectés : {', '.join(devices)}")
+        else:
+            self.audio_var.set("Désactiver l'audio")
+            self.audio_hint.configure(
+                text="Aucun périphérique audio détecté. Active 'Stereo Mix' dans les "
+                     "paramètres son de Windows, ou installe VB-CABLE (voir README), "
+                     "puis clique sur 🔄.")
+            self.log("[SERVEUR] Aucun périphérique audio dshow détecté.")
+            self.log("[SERVEUR] --- Sortie brute de ffmpeg (diagnostic) ---")
+            for line in raw_output.strip().splitlines()[-25:]:
+                self.log("    " + line)
+            self.log("[SERVEUR] --- Fin sortie ffmpeg ---")
 
     def on_start(self):
         global RESOLUTION, ENABLE_AUDIO, AUDIO_DEVICE
