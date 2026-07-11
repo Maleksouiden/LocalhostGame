@@ -44,6 +44,134 @@ keyboard = KeyboardController()
 SCREEN_W, SCREEN_H = map(int, RESOLUTION.split("x"))
 
 
+def get_native_resolution():
+    """Détecte la résolution native de l'écran du PC serveur (Windows uniquement)."""
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        w = user32.GetSystemMetrics(0)
+        h = user32.GetSystemMetrics(1)
+        return f"{w}x{h}"
+    except Exception:
+        return None
+
+
+def select_resolution():
+    """Menu interactif pour choisir la résolution du stream (capture + encodage)."""
+    native = get_native_resolution()
+    presets = ["1920x1080", "2560x1440", "3840x2160"]
+
+    options = []
+    if native:
+        options.append(native)
+    for p in presets:
+        if p not in options:
+            options.append(p)
+
+    print("[SERVEUR] Configuration de la résolution du stream (capture côté serveur) :")
+    for i, val in enumerate(options):
+        tags = []
+        if val == native:
+            tags.append("résolution native détectée")
+        if val == RESOLUTION:
+            tags.append("actuellement configuré")
+        tag_str = f"  <- {', '.join(tags)}" if tags else ""
+        print(f"    [{i}] {val}{tag_str}")
+    print("    [c] Résolution personnalisée (ex: 1600x900)")
+
+    default_index = options.index(RESOLUTION) if RESOLUTION in options else None
+    hint = f"(Entrée = garder {RESOLUTION})" if default_index is not None else "(tape un numéro ou 'c')"
+
+    while True:
+        choice = input(f"[SERVEUR] Choix {hint} : ").strip().lower()
+
+        if choice == "" and default_index is not None:
+            return options[default_index]
+        if choice == "c":
+            custom = input("[SERVEUR] Résolution personnalisée (ex: 1600x900) : ").strip()
+            if "x" in custom and all(p.isdigit() for p in custom.split("x")):
+                return custom
+            print("[SERVEUR] Format invalide, réessaie (ex: 1600x900).")
+            continue
+        if choice.isdigit() and 0 <= int(choice) < len(options):
+            return options[int(choice)]
+
+        print("[SERVEUR] Choix invalide, réessaie.")
+
+
+def get_dshow_audio_devices():
+    """Retourne la liste des noms de périphériques audio DirectShow détectés par FFmpeg."""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
+            capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=15,
+        )
+        output = result.stderr
+    except Exception as e:
+        print("[SERVEUR] Impossible de lister les périphériques audio:", e)
+        return []
+
+    devices = []
+    in_audio_section = False
+    for line in output.splitlines():
+        if "DirectShow audio devices" in line:
+            in_audio_section = True
+            continue
+        if "DirectShow video devices" in line:
+            in_audio_section = False
+            continue
+        if in_audio_section and '"' in line:
+            name = line.split('"')[1]
+            devices.append(name)
+    return devices
+
+
+def select_audio_device(devices):
+    """Affiche un menu pour choisir manuellement le périphérique audio à utiliser."""
+    if not devices:
+        print("[SERVEUR] Aucun périphérique audio détecté sur ce PC.")
+        print("[SERVEUR] Voir le README, section 'Configuration audio' (Stereo Mix / VB-CABLE).")
+        print("[SERVEUR] → Audio désactivé pour cette session.")
+        return None
+
+    print("[SERVEUR] Périphériques audio disponibles :")
+    for i, d in enumerate(devices):
+        marker = "  <- actuellement configuré" if d == AUDIO_DEVICE else ""
+        print(f"    [{i}] {d}{marker}")
+    print("    [n] Désactiver l'audio pour cette session")
+
+    default_index = devices.index(AUDIO_DEVICE) if AUDIO_DEVICE in devices else None
+    if default_index is not None:
+        hint = f"(Entrée = garder \"{AUDIO_DEVICE}\", ou tape un numéro, ou 'n')"
+    else:
+        hint = "(tape un numéro dans la liste, ou 'n' pour désactiver l'audio)"
+
+    while True:
+        choice = input(f"[SERVEUR] Choix {hint} : ").strip().lower()
+
+        if choice == "" and default_index is not None:
+            return devices[default_index]
+        if choice == "n":
+            return None
+        if choice.isdigit() and 0 <= int(choice) < len(devices):
+            return devices[int(choice)]
+
+        print("[SERVEUR] Choix invalide, réessaie.")
+
+
+def get_local_ip():
+    """Récupère l'IP locale du PC sur le réseau (celle utilisée pour sortir vers internet/LAN)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = "127.0.0.1"
+    finally:
+        s.close()
+    return ip
+
+
 def start_discovery_beacon():
     """Écoute les requêtes de découverte broadcast et répond avec son IP/nom."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -77,21 +205,32 @@ def start_video_stream(client_ip):
     cmd = ["ffmpeg"]
 
     # ---- Entrée vidéo ----
-    cmd += ["-f", "gdigrab", "-framerate", str(FPS), "-i", "desktop"]
+    cmd += [
+        "-f", "gdigrab",
+        "-framerate", str(FPS),
+        "-probesize", "32",
+        "-i", "desktop",
+    ]
 
     # ---- Entrée audio (optionnelle) ----
     if ENABLE_AUDIO:
         cmd += ["-f", "dshow", "-i", f"audio={AUDIO_DEVICE}"]
 
     # ---- Encodage vidéo ----
+    native = get_native_resolution()
+    if RESOLUTION != native:
+        # Filtre de scale seulement si nécessaire (évite un coût de traitement inutile)
+        cmd += ["-vf", f"scale={RESOLUTION}"]
+
     cmd += [
-        "-vf", f"scale={RESOLUTION}",
         "-c:v", "h264_nvenc",
         "-preset", "p1",          # p1 = plus rapide (priorité latence)
         "-tune", "ull",           # ultra low latency
         "-rc", "cbr",
         "-b:v", BITRATE,
         "-g", str(FPS),           # 1 keyframe par seconde
+        "-bf", "0",                # pas de B-frames (elles retardent l'envoi)
+        "-rc-lookahead", "0",      # pas de look-ahead (évite d'attendre des frames futures)
         "-pix_fmt", "yuv420p",
     ]
 
@@ -107,6 +246,7 @@ def start_video_stream(client_ip):
         cmd += ["-an"]  # pas de piste audio
 
     cmd += [
+        "-flush_packets", "1",
         "-f", "mpegts",
         f"udp://{client_ip}:{VIDEO_PORT}?pkt_size=1316",
     ]
@@ -160,6 +300,31 @@ def start_input_listener():
 
 
 if __name__ == "__main__":
+    local_ip = get_local_ip()
+    print("=" * 50)
+    print(f"  IP du serveur : {local_ip}")
+    print(f"  Nom de la machine : {SERVER_NAME}")
+    print("=" * 50)
+    print("(garde cette IP sous la main pour une connexion manuelle si besoin)")
+    print()
+
+    # Sélection manuelle de la résolution du stream
+    RESOLUTION = select_resolution()
+    print()
+
+    # Sélection manuelle du périphérique audio
+    if ENABLE_AUDIO:
+        print("[SERVEUR] Recherche des périphériques audio...")
+        audio_devices = get_dshow_audio_devices()
+        selected_device = select_audio_device(audio_devices)
+        if selected_device:
+            AUDIO_DEVICE = selected_device
+            print(f"[SERVEUR] Audio activé avec : \"{AUDIO_DEVICE}\"")
+        else:
+            ENABLE_AUDIO = False
+            print("[SERVEUR] Audio désactivé, la vidéo seule sera streamée.")
+    print()
+
     # Beacon de découverte tourne en permanence en arrière-plan
     threading.Thread(target=start_discovery_beacon, daemon=True).start()
 

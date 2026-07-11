@@ -42,11 +42,14 @@ netsh advfirewall firewall add rule name="RemotePlayDiscovery" dir=in action=all
 netsh advfirewall firewall add rule name="RemotePlayConnect" dir=in action=allow protocol=UDP localport=5003
 ```
 
-Sur le PC **client**, autorise le port UDP `5000` en entrée (pour recevoir la vidéo) :
+Sur le PC **client**, autorise ces ports UDP en entrée :
 ```
 netsh advfirewall firewall add rule name="RemotePlayVideo" dir=in action=allow protocol=UDP localport=5000
+netsh advfirewall firewall add rule name="RemotePlayDiscoveryReply" dir=in action=allow protocol=UDP localport=5004
 ```
 (à lancer dans un `cmd` en mode Administrateur, sur les deux PC)
+
+> **Note Boot Camp (Mac) :** Windows sous Boot Camp classe souvent le réseau WiFi en profil "Public" par défaut, qui est plus restrictif. Vérifie dans Paramètres → Réseau et Internet → WiFi → propriétés de la connexion, que le type de réseau est bien sur **"Privé"**. Les règles `netsh` ci-dessus s'appliquent normalement à tous les profils par défaut, mais ça vaut le coup de vérifier si le souci persiste malgré les règles pare-feu.
 
 ## Lancement
 
@@ -67,7 +70,23 @@ Si aucun PC n'apparaît dans la liste : vérifie que `server.py` tourne bien, qu
 - `server.py` → `"preset", "p1"` : `p1` = plus rapide/moins latence, `p4`-`p7` = meilleure qualité mais plus de latence d'encodage
 - Privilégie le **câble Ethernet** entre les deux PC si possible (même sur le même WiFi, la latence WiFi ajoute du jitter)
 
-## Configuration audio (son du jeu inclus dans le stream)
+## Réduire la latence
+
+Le script est déjà réglé pour la latence minimale côté encodage (NVENC ultra low latency, pas de B-frames, pas de look-ahead). Si tu ressens encore de la latence, dans l'ordre d'impact :
+
+1. **Câble Ethernet plutôt que WiFi** — de loin le facteur le plus important. Le WiFi ajoute plusieurs dizaines de ms de latence variable (jitter) même en LAN, un câble direct entre les deux PC (ou via un switch/routeur filaire) élimine ce problème.
+2. **Bande 5GHz si WiFi obligatoire** — nettement moins de congestion/latence que la 2.4GHz.
+3. **Baisse la résolution du stream** (`select_resolution()` au démarrage) si ton réseau WiFi n'a pas assez de débit pour absorber le bitrate configuré — un stream qui sature la bande passante WiFi crée de la latence par accumulation de paquets.
+4. **Baisse le bitrate** (`BITRATE` dans `server.py`) si le réseau n'encaisse pas — un bitrate trop élevé pour la bande passante dispo cause du buffering réseau, donc de la latence, même si la source (NVENC) n'ajoute aucun délai.
+5. Vérifie qu'aucune app gourmande en bande passante ne tourne en fond sur les deux PC (mises à jour Windows, cloud sync, etc.)
+
+Sur un LAN filaire avec du NVENC comme ici, on doit pouvoir descendre sous les 15-20ms de latence totale (capture + encodage + réseau + décodage + affichage). Au-delà de 50-60ms perçus, le goulot est presque toujours le réseau (WiFi), pas le script.
+
+## Configuration de la résolution
+
+Le script te demande interactivement, au démarrage, la résolution à utiliser pour la capture/l'encodage (indépendante de l'écran du PC client — le flux s'affiche automatiquement à la bonne taille dans la fenêtre `ffplay`, peu importe si ton Mac est en 2K et le PC serveur en 1080p). Options : résolution native détectée automatiquement, presets courants, ou résolution personnalisée.
+
+
 
 Par défaut, `ENABLE_AUDIO = True` dans `server.py`. FFmpeg a besoin d'une source audio "loopback" (le son qui sort de tes enceintes/casque) pour pouvoir le capturer et l'envoyer au client. Deux options :
 

@@ -50,12 +50,16 @@ def start_video_player():
         "ffplay",
         "-fflags", "nobuffer",
         "-flags", "low_delay",
+        "-flags2", "fast",
         "-framedrop",
         "-probesize", "32",
         "-analyzeduration", "0",
         "-sync", "ext",
+        "-avioflags", "direct",
+        "-max_delay", "0",
+        "-vf", "setpts=0",
         "-f", "mpegts",
-        f"udp://0.0.0.0:{VIDEO_PORT}",
+        f"udp://0.0.0.0:{VIDEO_PORT}?fifo_size=1000000&overrun_nonfatal=1",
     ]
     print("[CLIENT] Ouverture du flux vidéo...")
     subprocess.Popen(cmd)
