@@ -1,0 +1,13 @@
+pq lorsque j'utilise mon mac en intel avec boot camp qui a windows je trouve ps l'autre pc mais l'autre pc me trouveDiagnosed asymmetric firewall blocking and formulated port-binding solutionDiagnosed asymmetric firewall blocking and formulated port-binding solutionC'est un comportement classique du pare-feu Windows sous Boot Camp : quand ton Mac envoie la requête de broadcast, le PC serveur reçoit bien et répond — mais la réponse revient sur un port aléatoire (port "éphémère") côté Mac, que le pare-feu Windows de Boot Camp bloque souvent en silence (contrairement au PC "normal" qui laisse passer ce genre de réponse). C'est pour ça que ça marche dans un sens et pas dans l'autre.
+La solution fiable : forcer le client à utiliser un port fixe pour recevoir les réponses, et ouvrir explicitement ce port dans le pare-feu du Mac (Boot Camp).Analysé asymétrie réseau et documenté configuration firewallAnalysé asymétrie réseau et documenté configuration firewallMaintenant, mets à jour ton pare-feu sur le Mac (côté Windows Boot Camp) avec cette règle supplémentaire (en plus de celle du port vidéo 5000) :Fichier modifié, a exécuté une commande, lu un fichierFichier modifié, a exécuté une commande, lu un fichierCe qu'il faut faire :
+
+Remplace client.py par la nouvelle version sur ton Mac (Boot Camp)
+Sur le Mac, ouvre un cmd en Administrateur et lance :
+
+netsh advfirewall firewall add rule name="RemotePlayDiscoveryReply" dir=in action=allow protocol=UDP localport=5004
+
+Vérifie aussi que le port vidéo 5000 est bien autorisé sur le Mac (souvent oublié si le Mac agit comme client)
+Relance client.py et rescanne
+
+Le changement technique : avant, le socket qui envoie la requête de broadcast recevait la réponse sur un port aléatoire (choisi par Windows), invisible pour une règle pare-feu statique. Maintenant il est fixé sur le port 5004, donc une seule règle suffit à le débloquer — peu importe le comportement particulier du pare-feu de Boot Camp.
+Dis-moi si ça débloque la découverte après ça.
