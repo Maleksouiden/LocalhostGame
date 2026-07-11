@@ -23,6 +23,7 @@ from pynput import mouse, keyboard
 
 # ==================== CONFIGURATION ====================
 DISCOVERY_PORT = 5002
+DISCOVERY_REPLY_PORT = 5004  # port fixe pour recevoir les réponses (facilite la règle pare-feu)
 CONNECT_PORT = 5003
 VIDEO_PORT = 5000
 INPUT_PORT = 5001
@@ -101,6 +102,7 @@ def scan_for_servers(timeout=SCAN_TIMEOUT):
     disc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     disc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     disc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    disc_sock.bind(("0.0.0.0", DISCOVERY_REPLY_PORT))  # port fixe pour recevoir les réponses
     disc_sock.settimeout(0.3)
 
     found = {}
@@ -185,7 +187,30 @@ def show_server_picker():
     refresh_btn = tk.Button(root, text="🔄 Rescanner", font=("Segoe UI", 9),
                              bg="#f07317", fg="white", relief="flat",
                              command=refresh)
-    refresh_btn.pack(pady=10)
+    refresh_btn.pack(pady=5)
+
+    # ---- Secours : connexion manuelle par IP ----
+    manual_frame = tk.Frame(root, bg="#1e1e1e")
+    manual_frame.pack(pady=10, fill="x", padx=20)
+
+    tk.Label(manual_frame, text="Ou entre l'IP manuellement :",
+             bg="#1e1e1e", fg="#aaaaaa", font=("Segoe UI", 8)).pack(anchor="w")
+
+    ip_entry_frame = tk.Frame(manual_frame, bg="#1e1e1e")
+    ip_entry_frame.pack(fill="x", pady=3)
+
+    ip_var = tk.StringVar()
+    ip_entry = tk.Entry(ip_entry_frame, textvariable=ip_var, font=("Segoe UI", 10))
+    ip_entry.pack(side="left", fill="x", expand=True)
+
+    def connect_manual():
+        ip = ip_var.get().strip()
+        if ip:
+            on_server_clicked(ip, root)
+
+    tk.Button(ip_entry_frame, text="Connexion", font=("Segoe UI", 9),
+              bg="#2d2d2d", fg="white", relief="flat",
+              command=connect_manual).pack(side="left", padx=(5, 0))
 
     root.after(100, refresh)
     root.mainloop()
