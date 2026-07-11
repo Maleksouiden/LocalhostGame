@@ -17,6 +17,9 @@ import socket
 import json
 import threading
 import platform
+import queue
+import tkinter as tk
+from tkinter import ttk
 from pynput.mouse import Controller as MouseController, Button
 from pynput.keyboard import Controller as KeyboardController, Key, KeyCode
 
@@ -299,40 +302,210 @@ def start_input_listener():
             print("[SERVEUR] Erreur input:", e)
 
 
-if __name__ == "__main__":
-    local_ip = get_local_ip()
-    print("=" * 50)
-    print(f"  IP du serveur : {local_ip}")
-    print(f"  Nom de la machine : {SERVER_NAME}")
-    print("=" * 50)
-    print("(garde cette IP sous la main pour une connexion manuelle si besoin)")
-    print()
+class ServerApp:
+    """Interface graphique : configuration (résolution / audio) + statut en direct,
+    à la place des prompts en ligne de commande."""
 
-    # Sélection manuelle de la résolution du stream
-    RESOLUTION = select_resolution()
-    print()
+    def __init__(self):
+        global RESOLUTION, ENABLE_AUDIO, AUDIO_DEVICE
 
-    # Sélection manuelle du périphérique audio
-    if ENABLE_AUDIO:
-        print("[SERVEUR] Recherche des périphériques audio...")
-        audio_devices = get_dshow_audio_devices()
-        selected_device = select_audio_device(audio_devices)
-        if selected_device:
-            AUDIO_DEVICE = selected_device
-            print(f"[SERVEUR] Audio activé avec : \"{AUDIO_DEVICE}\"")
+        self.local_ip = get_local_ip()
+        self.log_queue = queue.Queue()
+        self.started = False
+
+        self.root = tk.Tk()
+        self.root.title("LAN Remote Play - Serveur")
+        self.root.geometry("520x520")
+        self.root.configure(bg="#1e1e1e")
+        self.root.resizable(False, False)
+
+        FG, BG, BG2, ACCENT = "white", "#1e1e1e", "#2d2d2d", "#f07317"
+
+        header = tk.Label(self.root, text="🖥  Configuration du serveur",
+                           bg=BG, fg=FG, font=("Segoe UI", 13, "bold"))
+        header.pack(pady=(15, 5))
+
+        info = tk.Label(self.root,
+                         text=f"IP : {self.local_ip}    •    Nom : {SERVER_NAME}",
+                         bg=BG, fg="#aaaaaa", font=("Segoe UI", 9))
+        info.pack(pady=(0, 15))
+
+        # ---- Résolution ----
+        res_frame = tk.Frame(self.root, bg=BG)
+        res_frame.pack(fill="x", padx=25, pady=5)
+        tk.Label(res_frame, text="Résolution du stream :", bg=BG, fg=FG,
+                 font=("Segoe UI", 10)).pack(anchor="w")
+
+        native = get_native_resolution()
+        presets = ["1920x1080", "2560x1440", "3840x2160"]
+        res_options = []
+        if native:
+            res_options.append(f"{native} (native)")
+        for p in presets:
+            if p not in [o.split(" ")[0] for o in res_options]:
+                res_options.append(p)
+        res_options.append("Personnalisée…")
+
+        self.res_var = tk.StringVar(value=res_options[0])
+        res_combo = ttk.Combobox(res_frame, textvariable=self.res_var,
+                                  values=res_options, state="readonly", font=("Segoe UI", 10))
+        res_combo.pack(fill="x", pady=5)
+
+        self.custom_res_var = tk.StringVar(value=RESOLUTION)
+        self.custom_res_entry = tk.Entry(res_frame, textvariable=self.custom_res_var,
+                                          font=("Segoe UI", 10))
+
+        def on_res_change(*_):
+            if self.res_var.get() == "Personnalisée…":
+                self.custom_res_entry.pack(fill="x", pady=(0, 5))
+            else:
+                self.custom_res_entry.pack_forget()
+        res_combo.bind("<<ComboboxSelected>>", on_res_change)
+
+        # ---- Audio ----
+        audio_frame = tk.Frame(self.root, bg=BG)
+        audio_frame.pack(fill="x", padx=25, pady=5)
+        tk.Label(audio_frame, text="Périphérique audio :", bg=BG, fg=FG,
+                 font=("Segoe UI", 10)).pack(anchor="w")
+
+        self.log("[SERVEUR] Recherche des périphériques audio...")
+        audio_devices = get_dshow_audio_devices() if ENABLE_AUDIO else []
+        audio_options = ["Désactiver l'audio"] + audio_devices
+        default_audio = AUDIO_DEVICE if AUDIO_DEVICE in audio_devices else (
+            audio_devices[0] if audio_devices else "Désactiver l'audio")
+        self.audio_var = tk.StringVar(value=default_audio)
+        audio_combo = ttk.Combobox(audio_frame, textvariable=self.audio_var,
+                                    values=audio_options, state="readonly", font=("Segoe UI", 10))
+        audio_combo.pack(fill="x", pady=5)
+        if not audio_devices:
+            tk.Label(audio_frame, text="Aucun périphérique détecté (voir README, section audio).",
+                     bg=BG, fg="#aaaaaa", font=("Segoe UI", 8)).pack(anchor="w")
+
+        # ---- Bouton démarrer ----
+        self.start_btn = tk.Button(self.root, text="▶  Démarrer le serveur",
+                                    font=("Segoe UI", 11, "bold"), bg=ACCENT, fg="white",
+                                    relief="flat", pady=10, command=self.on_start)
+        self.start_btn.pack(fill="x", padx=25, pady=15)
+
+        # ---- Zone de statut / logs ----
+        tk.Label(self.root, text="Statut :", bg=BG, fg=FG,
+                 font=("Segoe UI", 10)).pack(anchor="w", padx=25)
+        self.status_text = tk.Text(self.root, height=12, bg=BG2, fg="#dddddd",
+                                    font=("Consolas", 9), relief="flat", state="disabled")
+        self.status_text.pack(fill="both", expand=True, padx=25, pady=(5, 15))
+
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.root.after(150, self.drain_log_queue)
+
+    def log(self, msg):
+        """Thread-safe : les threads réseau appellent ceci, l'UI l'affiche via la queue."""
+        print(msg)
+        self.log_queue.put(msg)
+
+    def drain_log_queue(self):
+        while not self.log_queue.empty():
+            msg = self.log_queue.get_nowait()
+            self.status_text.configure(state="normal")
+            self.status_text.insert("end", msg + "\n")
+            self.status_text.see("end")
+            self.status_text.configure(state="disabled")
+        self.root.after(150, self.drain_log_queue)
+
+    def on_start(self):
+        global RESOLUTION, ENABLE_AUDIO, AUDIO_DEVICE
+
+        if self.started:
+            return
+        self.started = True
+        self.start_btn.configure(state="disabled", text="✅ Serveur en cours d'exécution")
+
+        # Résolution
+        if self.res_var.get() == "Personnalisée…":
+            custom = self.custom_res_var.get().strip()
+            if "x" in custom and all(p.isdigit() for p in custom.split("x")):
+                RESOLUTION = custom
+            else:
+                self.log("[SERVEUR] Résolution personnalisée invalide, garde " + RESOLUTION)
         else:
+            RESOLUTION = self.res_var.get().split(" ")[0]
+
+        # Audio
+        choice = self.audio_var.get()
+        if choice == "Désactiver l'audio":
             ENABLE_AUDIO = False
-            print("[SERVEUR] Audio désactivé, la vidéo seule sera streamée.")
-    print()
+            self.log("[SERVEUR] Audio désactivé, la vidéo seule sera streamée.")
+        else:
+            ENABLE_AUDIO = True
+            AUDIO_DEVICE = choice
+            self.log(f"[SERVEUR] Audio activé avec : \"{AUDIO_DEVICE}\"")
 
-    # Beacon de découverte tourne en permanence en arrière-plan
-    threading.Thread(target=start_discovery_beacon, daemon=True).start()
+        self.log(f"[SERVEUR] Résolution : {RESOLUTION}")
+        self.log(f"[SERVEUR] IP du serveur : {self.local_ip}  (garde-la sous la main pour une connexion manuelle)")
 
-    # Écoute des inputs tourne aussi en permanence
-    threading.Thread(target=start_input_listener, daemon=True).start()
+        threading.Thread(target=start_discovery_beacon_gui, args=(self,), daemon=True).start()
+        threading.Thread(target=start_input_listener_gui, args=(self,), daemon=True).start()
+        threading.Thread(target=self.serve_loop, daemon=True).start()
 
-    # On attend qu'un client clique dessus pour connaître son IP, puis on stream
+    def serve_loop(self):
+        while True:
+            client_ip = wait_for_client_gui(self)
+            start_video_stream_gui(self, client_ip)
+            self.log("[SERVEUR] Stream terminé, en attente d'une nouvelle connexion...")
+
+    def on_close(self):
+        # Le process ffmpeg éventuellement en cours s'arrêtera avec le process Python
+        self.root.destroy()
+        import os
+        os._exit(0)
+
+    def run(self):
+        self.root.mainloop()
+
+
+def start_discovery_beacon_gui(app):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("0.0.0.0", DISCOVERY_PORT))
+    app.log(f"[SERVEUR] Beacon de découverte actif sur le port {DISCOVERY_PORT}")
     while True:
-        client_ip = wait_for_client()
-        start_video_stream(client_ip)
-        print("[SERVEUR] Stream terminé, en attente d'une nouvelle connexion...")
+        data, addr = sock.recvfrom(1024)
+        if data == b"REMOTEPLAY_DISCOVER":
+            reply = json.dumps({"name": SERVER_NAME}).encode("utf-8")
+            sock.sendto(reply, addr)
+            app.log(f"[SERVEUR] Découvert par {addr[0]}")
+
+
+def wait_for_client_gui(app):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("0.0.0.0", DISCOVERY_PORT + 1))
+    app.log("[SERVEUR] En attente qu'un client clique pour se connecter...")
+    while True:
+        data, addr = sock.recvfrom(1024)
+        if data == b"REMOTEPLAY_CONNECT":
+            app.log(f"[SERVEUR] Client connecté : {addr[0]}")
+            sock.close()
+            return addr[0]
+
+
+def start_video_stream_gui(app, client_ip):
+    app.log("[SERVEUR] Démarrage du stream vidéo" + (" + audio" if ENABLE_AUDIO else "") + f" vers {client_ip}")
+    start_video_stream(client_ip)
+
+
+def start_input_listener_gui(app):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("0.0.0.0", INPUT_PORT))
+    app.log(f"[SERVEUR] Écoute des inputs sur le port {INPUT_PORT}")
+    while True:
+        data, _ = sock.recvfrom(4096)
+        try:
+            event = json.loads(data.decode("utf-8"))
+            apply_input_event(event)
+        except Exception as e:
+            app.log(f"[SERVEUR] Erreur input: {e}")
+
+
+if __name__ == "__main__":
+    app = ServerApp()
+    app.run()

@@ -54,7 +54,8 @@ netsh advfirewall firewall add rule name="RemotePlayDiscoveryReply" dir=in actio
 ## Lancement
 
 1. Sur le PC **serveur** (gaming) : `python server.py`
-   → Il tourne en arrière-plan et attend qu'un client se connecte.
+   → Une fenêtre s'ouvre pour choisir la résolution et le périphérique audio, puis clique sur **"▶ Démarrer le serveur"**.
+   → Le statut (découverte, connexion client, stream) s'affiche en direct dans cette même fenêtre.
 
 2. Sur le PC **client** (contrôle) : `python client.py`
    → Une fenêtre s'ouvre, scanne le réseau, et affiche la liste des PC serveurs trouvés
@@ -63,6 +64,13 @@ netsh advfirewall firewall add rule name="RemotePlayDiscoveryReply" dir=in actio
 Une fenêtre `ffplay` s'ouvre ensuite avec le flux vidéo. Passe-la en plein écran (Alt+Entrée dans ffplay) pour une meilleure expérience et pour que les coordonnées souris correspondent bien à l'écran distant.
 
 Si aucun PC n'apparaît dans la liste : vérifie que `server.py` tourne bien, que les deux PC sont sur le même réseau WiFi/LAN, et que le pare-feu autorise le port 5002 (découverte) sur le serveur.
+
+### Si la connexion se fait (la souris bouge sur le serveur) mais que l'image ne s'affiche pas
+
+C'est presque toujours l'un de ces deux cas :
+
+1. **Le port vidéo UDP 5000 est bloqué en entrée sur le PC client.** Le clic/découverte utilisent d'autres ports (5002-5004), donc ils peuvent fonctionner pendant que 5000 reste bloqué. Vérifie la règle pare-feu client (voir section "Pare-feu Windows" ci-dessus), en particulier sur Mac/Boot Camp où le réseau WiFi est parfois classé en profil "Public".
+2. **Message `Circular buffer overrun` dans la console du client.** Ça veut dire que le buffer de réception UDP d'`ffplay` déborde (flux trop rapide pour le buffer par défaut de Windows). `client.py` configure déjà un buffer de réception élargi (64 Mo) pour éviter ça — si le message persiste, essaie de baisser `BITRATE` dans `server.py` (ex: `"8M"`) ou de passer en Ethernet.
 
 ## Réglages perf
 

@@ -46,8 +46,14 @@ def send_event(event: dict):
 
 def start_video_player():
     """Lance ffplay en mode basse latence pour afficher le flux reçu."""
+    # buffer_size = taille du buffer de réception du socket UDP (en octets).
+    # Sous Windows, le buffer socket par défaut est petit (~64 Ko) : avec un flux
+    # à 15+ Mbps, il déborde très vite -> message "Circular buffer overrun" et
+    # image qui ne s'affiche jamais / se fige. On le monte à 64 Mo pour absorber
+    # les pics. fifo_size est lui la taille du tampon applicatif ffplay (en paquets).
     cmd = [
         "ffplay",
+        "-window_title", "RemotePlay - Flux du serveur",
         "-fflags", "nobuffer",
         "-flags", "low_delay",
         "-flags2", "fast",
@@ -59,10 +65,15 @@ def start_video_player():
         "-max_delay", "0",
         "-vf", "setpts=0",
         "-f", "mpegts",
-        f"udp://0.0.0.0:{VIDEO_PORT}?fifo_size=1000000&overrun_nonfatal=1",
+        f"udp://0.0.0.0:{VIDEO_PORT}?fifo_size=5000000&overrun_nonfatal=1&buffer_size=67108864&timeout=10000000",
     ]
-    print("[CLIENT] Ouverture du flux vidéo...")
-    subprocess.Popen(cmd)
+    print("[CLIENT] Ouverture du flux vidéo (port", VIDEO_PORT, ")...")
+    try:
+        proc = subprocess.Popen(cmd)
+    except FileNotFoundError:
+        print("[CLIENT] ERREUR : ffplay introuvable. Vérifie que FFmpeg est bien installé et dans le PATH.")
+        return None
+    return proc
 
 
 # ---------------- Souris ----------------
